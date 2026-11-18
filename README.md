@@ -14,6 +14,45 @@ Then open `http://localhost:3000/demo` for a booking page, or sign up at `/signu
 
 Requires **Node 22.5+**. The app uses the built-in `node:sqlite`, so there are no native modules to compile. Data lives in `data/schedulr.db`; override it with `DB_PATH`.
 
+## Deploying (always-on, public URL)
+
+The production image runs `node src/server.js` directly. npm is only used at build time to install dependencies. SQLite needs a **persistent disk**, so serverless hosts (Vercel, Netlify, Cloudflare Workers) won't work. Use something that runs a long-lived container with a volume.
+
+### Option A — Fly.io (recommended, ~$2–4/month)
+
+```bash
+# one-time: install flyctl (https://fly.io/docs/flyctl/install/) and `fly auth signup`
+fly launch --no-deploy --copy-config --name <your-app-name>   # keeps fly.toml, picks a unique name
+fly volumes create schedulr_data --size 1 --region iad         # match primary_region in fly.toml
+fly deploy
+```
+
+Your app is live at `https://<your-app-name>.fly.dev`. Then:
+
+1. Go to `/signup` and create **your** host account.
+2. Close sign-ups so strangers can't create accounts: `fly secrets set ALLOW_SIGNUP=false` (this redeploys).
+3. Share `https://<your-app-name>.fly.dev/<your-username>`.
+
+Backups: `fly ssh sftp get /data/schedulr.db ./backup.db`. For continuous backups, add [Litestream](https://litestream.io).
+
+### Option B — any Linux VPS with Docker
+
+```bash
+docker compose up -d
+```
+
+`restart: unless-stopped` brings it back after crashes and reboots. Put Caddy, nginx or a Cloudflare Tunnel in front of port 3000 for HTTPS.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP port |
+| `DB_PATH` | `data/schedulr.db` (`/data/schedulr.db` in Docker) | SQLite file location |
+| `ALLOW_SIGNUP` | `true` | Set `false` to stop new host accounts being created |
+
+Run **one instance only**. SQLite and the in-memory rate limiter both assume a single process.
+
 ## Features
 
 **For hosts**
@@ -71,4 +110,4 @@ These are what separates this from a production scheduling product, roughly in p
 1. **Calendar sync** (Google/Outlook free-busy). Today only Schedulr's own bookings block time, so a host's other meetings will be double-booked.
 2. **Email notifications.** No confirmation, reminder or cancellation emails are sent. Invitees get the manage link only on the confirmation page.
 3. **Video conferencing links** (Zoom/Meet auto-generation). Location is free text.
-4. Custom invitee questions, team/round-robin scheduling, payments, rate limiting, CSRF tokens (SameSite=Lax cookies are the current defence), password reset.
+4. Custom invitee questions, team/round-robin scheduling, payments, CSRF tokens (SameSite=Lax cookies are the current defence), password reset.

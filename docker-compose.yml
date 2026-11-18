@@ -1,0 +1,14 @@
+# Self-hosting on any Linux server/VPS:  docker compose up -d
+# Put a TLS reverse proxy (Caddy, nginx, Cloudflare Tunnel) in front for a public HTTPS URL.
+services:
+  schedulr:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      ALLOW_SIGNUP: "true"   # set to "false" once your account exists
+    volumes:
+      - schedulr-data:/data
+volumes:
+  schedulr-data:

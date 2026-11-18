@@ -8,10 +8,24 @@ const views = require('./views/pages');
 const { availableSlots, createBooking, cancelBooking, BookingError } = require('./scheduling');
 const { groupByDate } = require('./slots');
 const { buildIcs, googleCalendarUrl } = require('./ics');
+const { rateLimit } = require('./ratelimit');
+
+// Set ALLOW_SIGNUP=false on a personal deployment so strangers can't create host accounts.
+const ALLOW_SIGNUP = process.env.ALLOW_SIGNUP !== 'false';
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
+const bookLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
 
 const app = express();
 app.set('trust proxy', true);
 app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  // Booking manage links carry a secret token in the URL; don't leak it to other sites.
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
+app.get('/healthz', (_req, res) => res.type('text').send('ok'));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));
 app.use(express.json({ limit: '50kb' }));
 app.use('/static', express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h' }));
@@ -56,8 +70,11 @@ app.use((req, res, next) => {
 
 app.get('/', (req, res) => (req.user ? res.redirect('/dashboard') : send(res, views.landing({ user: null }))));
 
-app.get('/signup', (req, res) => send(res, views.authForm({ mode: 'signup' })));
-app.post('/signup', (req, res) => {
+const signupClosed = (req, res) =>
+  send(res, views.authForm({ mode: 'login', error: 'Sign-ups are closed on this server. Log in if you already have an account.' }), 403);
+app.get('/signup', (req, res) => (ALLOW_SIGNUP ? send(res, views.authForm({ mode: 'signup' })) : signupClosed(req, res)));
+app.post('/signup', authLimiter, (req, res) => {
+  if (!ALLOW_SIGNUP) return signupClosed(req, res);
   const { name = '', email = '', password = '' } = req.body;
   const username = String(req.body.username || '').toLowerCase().trim();
   const values = { name, email, username };
@@ -88,7 +105,7 @@ app.post('/signup', (req, res) => {
 });
 
 app.get('/login', (req, res) => send(res, views.authForm({ mode: 'login', next: req.query.next })));
-app.post('/login', (req, res) => {
+app.post('/login', authLimiter, (req, res) => {
   const { email = '', password = '' } = req.body;
   const user = q.get('SELECT * FROM users WHERE email = ?', email.trim());
   if (!user || !auth.verifyPassword(password, user.password_hash)) {
@@ -307,7 +324,7 @@ app.get('/api/slots/:username/:slug', (req, res) => {
   res.json({ timezone: tz, month: start.toFormat('yyyy-MM'), slots: groupByDate(slots, tz) });
 });
 
-app.post('/api/book/:username/:slug', (req, res) => {
+app.post('/api/book/:username/:slug', bookLimiter, (req, res) => {
   const { host, et } = findPublicEventType(req.params.username, req.params.slug);
   if (!et) return res.status(404).json({ error: 'Event type not found.' });
   const { start, name, email, notes, timezone, reschedule: rToken } = req.body || {};
@@ -402,7 +419,16 @@ app.use((err, req, res, _next) => {
 
 if (require.main === module) {
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, () => console.log(`Schedulr running at http://localhost:${port}`));
+  const server = app.listen(port, '0.0.0.0', () => console.log(`Schedulr listening on port ${port}`));
+  const shutdown = () => {
+    server.close(() => {
+      require('./db').db.close();
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 module.exports = app;
